@@ -52,7 +52,8 @@ lazy val petlApi = project.in(file("petl-api"))
     "io.circe" %% "circe-literal" % circeVersion,
     "io.circe" %% "circe-generic" % circeVersion,
     "io.circe" %% "circe-generic-extras_sjs0.6" % circeVersion,
-    "io.circe" %% "circe-yaml" % "0.6.1"
+    "io.circe" %% "circe-yaml" % "0.6.1",
+    "org.scala-lang" % "scala-reflect" % scalaVersion.value
   ))
   .settings(testDependencies)
 
