@@ -1,12 +1,7 @@
 package com.panaseer.petl.pipeline
 
 trait Stage {
-
-  def `type`: String
-
-  def args: Map[String, String]
+  def args: PetlArg
 }
 
-case class Pipeline(name: String, vars: Map[String, String], stages: Seq[Stage])
-
-case class StageImpl(name: String, `type`: String, args: Map[String, String]) extends Stage
+case class Pipeline(name: String = "", vars: Map[String, String], stages: Seq[PetlArg])

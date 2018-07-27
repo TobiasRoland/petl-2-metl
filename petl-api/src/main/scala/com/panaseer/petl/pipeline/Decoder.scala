@@ -1,72 +1,49 @@
 package com.panaseer.petl.pipeline
 
 import cats.implicits._
+import io.circe
 import io.circe.generic.extras.Configuration
 import io.circe.generic.extras.semiauto.deriveDecoder
-import io.circe.{DecodingFailure, Json, JsonObject}
+import io.circe.{Json, JsonObject, yaml}
 
-import scala.collection.immutable
+import scala.util.Try
 import scala.util.matching.Regex
 
 trait Decoder {
-
   def parse(toParse: String): Either[String, Pipeline]
-
 }
 
-class DecoderImpl(registry: PetlRegistry) extends Decoder {
+class DecoderImpl(decodePetlArgs: JsonToArgs = new JsonToArgs()) extends Decoder {
+
+  case class NameAndVars(name: String, vars: Map[String, String] = Map())
+  case class NameAndType(name: String, `type`: String)
 
   implicit val configuration: Configuration = Configuration.default.withDefaults
-
-  import io.circe.generic.extras.semiauto.{deriveDecoder, deriveEncoder}
-
-  implicit val decodeStage: io.circe.Decoder[StageImpl] = deriveDecoder
-
+  implicit val decodeNameAndVars: circe.Decoder[NameAndVars] = deriveDecoder
+  implicit val decodeNameAndType: circe.Decoder[NameAndType] = deriveDecoder
 
   override def parse(toParse: String): Either[String, Pipeline] = {
-    import io.circe.yaml.parser
-
-    def getName(json: Json): Either[String, String] = {
-      json.hcursor.downField("name").as[String].left.map(_.getMessage())
-    }
-
-    def vars(json: Json): Either[String, Map[String, String]] = (json \\ "vars")
-      .flatMap(_.asObject)
-      .map(_.toMap)
-      .map(_.mapValues(_.asString.get))
-      .reduce(_ ++ _).asRight
-
-    def interpolateStages(vars: Map[String, String])(json: Json) = json \\ "stages" match {
-      case x :: Nil => transform(x, interpolate(vars)).asArray.getOrElse(Seq()).asRight
-      case _ => "Stage is weird".asLeft
-    }
-
-    def stages(js: Seq[Json]): Either[String, Seq[Stage]] = {
-      js.map(json => {
-
-        decodeStage.decodeJson(json)  match {
-          case Left(e) =>
-            println(e)
-            e.toString()
-            throw e
-          case Right(good) => good
-        }
-
-      }).asRight
-    }
-
-    def parse = {
-      parser.parse(toParse).left.map(_.message)
-    }
-
     for {
-      parsed <- parse
-      name <- getName(parsed)
-      vars <- vars(parsed)
-      interpolated <- interpolateStages(vars)(parsed)
-      s <- stages(interpolated)
-    } yield Pipeline(name, vars, s)
+      json <- yamlToJson(toParse)
+      nameAndVars <- json.as[NameAndVars].left.map(_.getMessage())
+      interpolated <- interpolatedStages(json, nameAndVars.vars)
+      stages <- parseStages(interpolated)
+    } yield Pipeline(nameAndVars.name, nameAndVars.vars, stages)
+  }
 
+  def parseStages(rawStages: Seq[Json]): Either[String, Seq[PetlArg]] = rawStages
+    .map(stage => decodePetlArgs.parse(stage))
+    .asRight
+
+  def yamlToJson(toParse: String): Either[String, Json] = yaml.parser.parse(toParse).left.map(_.message)
+
+  def interpolatedStages(json: Json, vars: Map[String, String]): Either[String, Seq[Json]] = json \\ "stages" match {
+    case  Nil => s"No [stages]` key defined in $json".asLeft
+    case stages :: Nil => {
+      val interpolatedJson = transformStringValues(interpolate(vars), stages)
+      interpolatedJson.asArray.getOrElse(Seq()).asRight
+    }
+    case otherwise => s"Expected only one key of [stages], found ${otherwise.length} in $json".asLeft
   }
 
   private[this] val shouldBeInterpolated: Regex = """\$\{(.+)}""".r
@@ -76,16 +53,9 @@ class DecoderImpl(registry: PetlRegistry) extends Decoder {
     case _ => target
   }
 
-  def transformObjectKeys(obj: JsonObject, f: String => String): JsonObject =
-    JsonObject.fromIterable(
-      obj.toList.map {
-        case (k, v) if v.isString => k -> Json.fromString(f(v.asString.get))
-        case (k, v) => k -> transform(v, f)
-      }
-    )
+  def transformStringValues(f: String => String, json: Json): Json = json
+    .mapString(f)
+    .mapArray(a => a.map(transformStringValues(f, _)))
+    .mapObject(obj => JsonObject(obj.toMap.mapValues(transformStringValues(f, _)).toSeq: _*))
 
-  def transform(json: Json, f: String => String): Json = json.arrayOrObject(
-    json,
-    array => Json.fromValues(array.map(transform(_, f))),
-    obj => Json.fromJsonObject(transformObjectKeys(obj, f)))
 }
